@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+sys.path.append(os.path.join(os.path.dirname(sys.argv[0]), '..',))
+
+from cryptocoins import CoinAddress, COINS
+
+if __name__ == '__main__':
+    coins = [c.code.lower() for c in COINS]
+    if len(sys.argv) < 2:
+        print(sys.argv[0], '|'.join(coins).lower(), file=sys.stderr)
+        exit(1)
+    else:
+        index = coins.index(sys.argv[1].lower())
+        a = CoinAddress(COINS[index])
+        print(a.currency.code)
+        print('address:', a.address.decode())
+        print('private:', a.in_wallet_import_format.decode())
