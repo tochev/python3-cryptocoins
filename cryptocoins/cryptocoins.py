@@ -1,41 +1,22 @@
-import collections
+#!/usr/bin/env python3
 import ecdsa
 import hashlib
-import re
+import requests
 
 from .secure_random import SecureRandom
-from .base58 import base58decode, base58encode, BASE58_ALPHABET_REGEX
+from .base58 import base58decode, base58encode
+from .crypto_currencies import COINS, CryptoCurrency
 
-class Cryptocoin(collections.namedtuple('CryptocoinDescription',
-                                        ['code',
-                                         'network_version',
-                                         'private_key_prefix',
-                                         'wallet_import_format_prefix',
-                                         'compressed_wif_prefix'])):
-    def is_wallet_import_format(self, byteseq):
-        regex = b'^' + self.wallet_import_format_prefix + \
-                    BASE58_ALPHABET_REGEX + b'{50}$'
-        return re.match(regex, byteseq) is not None
 
-    def __str__(self):
-        return self.code
-
-Bitcoin  = Cryptocoin('BTC', 0x00, 0x80, b'5', b'[LK]')
-Litecoin = Cryptocoin('LTC', 0x30, 0xb0, b'6', b'T')
-Dogecoin = Cryptocoin('DOGE', 0x1e, 0x9e, b'6', b'Q')
-Testnet  = Cryptocoin('TESTNET', 0x6F, 0xEF, b'9', b'c')
-
-# TODO: auto add coins to a coin container
-COINS = [Bitcoin, Litecoin, Dogecoin, Testnet]
-
+def checksum_bytes(data, count=4):
+    return hashlib.sha256(hashlib.sha256(data).digest()).digest()[:count]
 
 def decode_wallet_import_format(base58_text, version=None):
     bs = base58decode(base58_text)
     data = bs[0:33]
-    checksum = hashlib.sha256(hashlib.sha256(data).digest()).digest()
 
-    if checksum[:4] != bs[33:]:
-        raise ValueError("Failed to validate checksum!")
+    if checksum_bytes(data) != bs[33:]:
+        raise ValueError("Failed to validate wallet checksum!")
 
     if version is not None and version != data[0]:
         raise ValueError("Unexpected version!")
@@ -43,17 +24,61 @@ def decode_wallet_import_format(base58_text, version=None):
     return data[1:], data[0]
 
 
-class CoinAddress():
+class PublicAddress():
+    """Public address."""
+
+    def __init__(self, address, currency=None):
+        self.address, self.currency = CoinAddress.validate_address(address)
+        if currency is not None and currency != self.currency:
+            raise ValueError(
+                "Currency mismatch. Address belongs to %s, expected %s." % (
+                    self.currency.code, currency.code))
+
+    @staticmethod
+    def validate_address(address):
+        """Validates an address and converts it to bytes.
+
+        :returns: (bytes(address), crypto_currency)
+        :raises: ValueError, KeyError
+        """
+        if isinstance(address, str):
+            address = address.encode('ascii')
+        bs = base58decode(address)
+        if checksum_bytes(bs[:21]) != bs[21:]:
+            raise ValueError("Failed to validate address checksum!")
+        currency = COINS.get_by_network_version(bs[0])
+        return address, currency
+
+    def __str__(self):
+        return self.address.decode('ascii')
+
+    def get_balance(self):
+        """Note this makes a call to blockr.io.
+
+        :returns: float
+        """
+        SUPPORTED_CODES = {'BTC': 'btc', 'LTC': 'ltc', 'TESTNET': 'tbtc'}
+        code = self.currency.code
+        assert code in SUPPORTED_CODES, "Currency %s not supported" % code
+        r = requests.get('https://%s.blockr.io/api/v1/address/balance/%s' %
+                            (SUPPORTED_CODES[code], self.address.decode('ascii')))
+        r.raise_for_status()
+        return r.json()['data']['balance']
+
+
+class CoinAddress(PublicAddress):
     """
-    >>> a = CoinAddress(Bitcoin, '5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ')
+    Address associated with a private key.
+
+    >>> a = CoinAddress(COINS.BTC, '5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ')
     >>> a.in_wallet_import_format
     b'5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ'
     >>> a.address
     b'1GAehh7TsJAHuUAeKZcXf5CnwuGuGgyX2S'
-    >>> a = CoinAddress(Bitcoin, 0x18E14A7B6A307F426A94F8114701E7C8E774E7F9A47E2C2035DB29A206321725)
+    >>> a = CoinAddress(COINS.BTC, 0x18E14A7B6A307F426A94F8114701E7C8E774E7F9A47E2C2035DB29A206321725)
     >>> a.address
     b'16UwLL9Risc3QfPqBUvKofHmBQ7wMtjvM'
-    >>> str(CoinAddress(Litecoin, '6vcHcscccKuBVdka8qXkb2aD5YPvxzf6zv5RfFrVNi5JYGJ55W7'))
+    >>> str(CoinAddress(COINS.LTC, '6vcHcscccKuBVdka8qXkb2aD5YPvxzf6zv5RfFrVNi5JYGJ55W7'))
     'LTC: LZSQEQSKQeyx64rTZAND3FkfNWBAFzg4WQ (priv: 6vcHcscccKuBVdka8qXkb2aD5YPvxzf6zv5RfFrVNi5JYGJ55W7 )'
     """
 
@@ -61,14 +86,14 @@ class CoinAddress():
 
     def __init__(self, currency, private_key_data=None):
         """
-        :param currency: Cryptocoin object
+        :param currency: CryptoCurrency object
         :param private_key_data: can be one of
             - None (new key is generate)
             - int
             - 32 bytes
             - wallet import format
         """
-        assert isinstance(currency, Cryptocoin)
+        assert isinstance(currency, CryptoCurrency)
         self.currency = currency
         self.secret = self.parse_private_key(private_key_data)
 
@@ -111,8 +136,7 @@ class CoinAddress():
     def in_wallet_import_format(self):
         data = self.currency.private_key_prefix.to_bytes(1, 'big') + \
                 self.secret.to_bytes(32, 'big')
-        checksum = hashlib.sha256(hashlib.sha256(data).digest()).digest()
-        return base58encode(data + checksum[:4])
+        return base58encode(data + checksum_bytes(data))
 
     @property
     def address(self):
@@ -126,13 +150,13 @@ class CoinAddress():
                             hashlib.sha256(pub_der).digest()
                         ).digest()
         data = self.currency.network_version.to_bytes(1, 'big') + pub_ripemd160
-        checksum = hashlib.sha256(hashlib.sha256(data).digest()).digest()[:4]
-        return base58encode(data + checksum)
+        return base58encode(data + checksum_bytes(data))
 
     def __str__(self):
-        return '%s: %s (priv: %s )' % (self.currency.code,
+        return '%s: %s (priv: %s )' % (self.currency,
                                        self.address.decode(),
                                        self.in_wallet_import_format.decode())
+
 
 
 if __name__ == "__main__":

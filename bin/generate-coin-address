@@ -12,8 +12,8 @@ if __name__ == '__main__':
         print(sys.argv[0], '|'.join(coins).lower(), file=sys.stderr)
         exit(1)
     else:
-        index = coins.index(sys.argv[1].lower())
-        a = CoinAddress(COINS[index])
-        print(a.currency.code)
-        print('address:', a.address.decode())
-        print('private:', a.in_wallet_import_format.decode())
+        for arg in sys.argv[1:]:
+            a = CoinAddress(COINS.get_by_code(arg))
+            print(a.currency.code)
+            print('address:', a.address.decode())
+            print('private:', a.in_wallet_import_format.decode())

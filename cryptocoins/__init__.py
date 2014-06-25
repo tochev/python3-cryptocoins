@@ -1,1 +1,1 @@
-from .cryptocoins import CoinAddress, Bitcoin, Litecoin, Dogecoin, Testnet, COINS
+from .cryptocoins import PublicAddress, CoinAddress, COINS
